@@ -2,12 +2,14 @@ import faiss
 import pickle
 import ollama
 import numpy as np
+from datetime import datetime
 from sentence_transformers import SentenceTransformer
 
 # ======================================================
-# PATH
+# PATH CONFIG (RELATIVE → WORKS ON GITHUB / STREAMLIT)
 # ======================================================
-MODEL_DIR = "C:/Users/arjun/Downloads/IDIS2.0/models/"
+MODEL_DIR = "models/"
+FEEDBACK_PATH = "feedback/rag_feedback.jsonl"
 
 # ======================================================
 # LOAD ARTIFACTS
@@ -23,11 +25,11 @@ with open(MODEL_DIR + "vectorizer.pkl", "rb") as f:
 # ---- FAISS INDEX ----
 index = faiss.read_index(MODEL_DIR + "faiss.index")
 
-# ---- TICKETS (TEXT + LABEL TOGETHER) ----
+# ---- TICKETS (TEXT, LABEL) ----
 with open(MODEL_DIR + "tickets.pkl", "rb") as f:
-    tickets = pickle.load(f)  # tickets: list of tuples (text, label)
+    tickets = pickle.load(f)
 
-# ---- EMBEDDER ----
+# ---- EMBEDDING MODEL ----
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
 # ======================================================
@@ -44,7 +46,7 @@ def retrieve_similar_docs(query, predicted_category, k=10, final_k=3):
         if label == predicted_category:
             matched_docs.append(text)
 
-    # Fallback if insufficient category matches
+    # Fallback if not enough category matches
     if len(matched_docs) < final_k:
         for idx in indices[0]:
             text, _ = tickets[idx]
@@ -74,7 +76,6 @@ Instructions:
 - Identify the common issue across the tickets
 - Explain why the customer issue matches them
 - Use ONLY the ticket text as evidence
-- Do NOT invent new categories or assumptions
 - Keep the explanation concise (2–3 sentences)
 
 Return ONLY the explanation text.
@@ -92,7 +93,7 @@ def generate_rag_explanation(query, category):
             model="mistral:7b-instruct",
             messages=[{"role": "user", "content": prompt}]
         )
-        explanation = str(response["message"]["content"].strip())
+        explanation = str(response["message"]["content"]).strip()
     except Exception:
         explanation = (
             "The issue matches historical tickets involving similar customer complaints "
@@ -104,22 +105,44 @@ def generate_rag_explanation(query, category):
 # ======================================================
 # BUSINESS LOGIC
 # ======================================================
-def assign_priority():
-    return {
-        "priority": True,  # will cast later
-        "sla_risk": True,
-        "recommended_action": "Escalate to card operations team"
-    }
+def assign_priority(confidence):
+    if confidence < 0.65:
+        return {
+            "priority": "High",
+            "sla_risk": True,
+            "recommended_action": "Escalate to card operations team"
+        }
+    else:
+        return {
+            "priority": "Medium",
+            "sla_risk": False,
+            "recommended_action": "Resolve via automated workflow"
+        }
 
 def calibrate_confidence(confidence):
     return {
-        "calibrated_confidence": float(round(confidence * 0.95, 2)),
-        "trust_level": "Medium",
-        "human_review_required": bool(confidence < 0.65)
+        "calibrated_confidence": round(confidence * 0.95, 2),
+        "trust_level": "Medium" if confidence < 0.75 else "High",
+        "human_review_required": confidence < 0.65
     }
 
 # ======================================================
-# MAIN PIPELINE (FASTAPI CALLS THIS)
+# SELF-HEALING RAG (FEEDBACK LOGGING)
+# ======================================================
+def log_feedback(query, category, confidence, explanation):
+    record = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "query": query,
+        "predicted_category": category,
+        "confidence": confidence,
+        "explanation": explanation
+    }
+
+    with open(FEEDBACK_PATH, "a", encoding="utf-8") as f:
+        f.write(str(record).replace("'", '"') + "\n")
+
+# ======================================================
+# MAIN PIPELINE
 # ======================================================
 def run_pipeline(query):
     # ---- CLASSIFICATION ----
@@ -133,23 +156,27 @@ def run_pipeline(query):
         predicted_category
     )
 
-    # ---- OUTPUT DICTIONARY ----
+    # ---- CONFIDENCE & PRIORITY ----
+    priority_info = assign_priority(confidence)
+    confidence_info = calibrate_confidence(confidence)
+
+    # ---- FINAL OUTPUT ----
     output = {
         "predicted_category": predicted_category,
-        "confidence": confidence,
+        "confidence": round(confidence, 2),
         "explanation": explanation,
-        "similar_cases": list(similar_cases)  # ensure list of strings
+        "similar_cases": list(similar_cases),
+        **priority_info,
+        **confidence_info
     }
 
-    # ---- PRIORITY AND CONFIDENCE ----
-    priority_dict = assign_priority()
-    confidence_dict = calibrate_confidence(confidence)
-
-    # Cast any numpy.bool_ to native bool
-    priority_dict = {k: (bool(v) if isinstance(v, (np.bool_,)) else v) for k, v in priority_dict.items()}
-    confidence_dict = {k: (bool(v) if isinstance(v, (np.bool_,)) else v) for k, v in confidence_dict.items()}
-
-    output.update(priority_dict)
-    output.update(confidence_dict)
+    # ---- SELF-HEALING LOG ----
+    log_feedback(
+        query,
+        predicted_category,
+        confidence,
+        explanation
+    )
 
     return output
+
