@@ -237,6 +237,7 @@ Git / GitHub
 
 Arjun Patel
 AI / ML Engineer
+linkedin: www.linkedin.com/in/arjunpatel97259
 GitHub: https://github.com/Arjun-Patel1
 
 ⭐ If you like this project, give it a star!
