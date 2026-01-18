@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+streamlit
+sentence-transformers
+cross-encoder
+faiss-cpu
+requests
+numpy
+pandas
