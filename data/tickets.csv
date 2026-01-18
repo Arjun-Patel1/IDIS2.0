@@ -1,7 +1,0 @@
-text,label
-I have not received my debit card after two weeks,card_delivery_issue
-My debit card delivery is delayed,card_delivery_issue
-Card has not arrived yet,card_delivery_issue
-Unable to activate my debit card,card_activation_issue
-My card is blocked,card_block_issue
-ATM cash withdrawal failed,atm_issue
